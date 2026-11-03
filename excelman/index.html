@@ -36,6 +36,21 @@
         .render-progress { font-variant-numeric: tabular-nums; }
         /* Simulate: เส้นตารางสีดำ (ทับ class border-slate-300 ของเซลล์ใน #simTable) */
         #simTable td { border-color: #000 !important; }
+        .sim-scroll { scrollbar-width: auto; scrollbar-color: #64748b #e2e8f0; }
+        .sim-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+        .sim-scroll::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 6px; }
+        .sim-scroll::-webkit-scrollbar-thumb { background: #64748b; border-radius: 6px; border: 2px solid #e2e8f0; }
+        .sim-scroll::-webkit-scrollbar-thumb:hover { background: #334155; }
+        .sim-day-pill:has(input:checked) {
+            background-color: #eef2ff !important;
+            border-color: #6366f1 !important;
+            color: #1e1b4b !important;
+            box-shadow: 0 1px 2px rgba(99, 102, 241, 0.15);
+        }
+        .sim-month-card:has(input[data-monthgroup]:checked) {
+            border-color: #6366f1 !important;
+            box-shadow: 0 2px 6px rgba(99, 102, 241, 0.12);
+        }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
@@ -55,7 +70,7 @@
                 <div class="text-sm bg-indigo-700 px-3 py-1 rounded-full border border-indigo-500">
                     พร้อมใช้งาน
                 </div>
-                <div class="text-[10px] text-indigo-300 ml-2" id="appVer" title="เลขเวอร์ชันหน้าเว็บ — ใช้เช็คว่าโหลดไฟล์ล่าสุดแล้ว">v10.82</div>
+                <div class="text-[10px] text-indigo-300 ml-2" id="appVer" title="เลขเวอร์ชันหน้าเว็บ — ใช้เช็คว่าโหลดไฟล์ล่าสุดแล้ว">v10.85</div>
             </div>
         </div>
     </header>
@@ -433,9 +448,16 @@
                         <button class="bg-slate-600 hover:bg-slate-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition" data-sim-close>✕ ปิด</button>
                     </div>
                 </div>
-                <div class="px-4 py-2.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center gap-2 text-xs">
-                    <span class="font-semibold text-slate-500">📅 เดือน:</span>
-                    <div id="simMonthBox" class="flex flex-col gap-2 max-h-[140px] overflow-auto"></div>
+                <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex flex-col gap-2.5 text-xs">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="font-bold text-slate-700 text-sm">📅 เลือกเดือนและวันที่:</span>
+                        <select id="simMonthQuickSelect" class="text-xs border-2 border-indigo-300 rounded-lg px-3 py-1.5 bg-white font-semibold text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer shadow-sm" title="เลือกเดือนเดียวอย่างรวดเร็ว หรือเลื่อนไปที่เดือนนั้น"></select>
+                        <button type="button" id="simSelectAllBtn" class="px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold transition shadow-sm">✅ เลือกทุกเดือน/ทุกวัน</button>
+                        <button type="button" id="simClearAllBtn" class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 font-semibold transition shadow-sm">⬜ ล้างทั้งหมด</button>
+                        <span id="simSelectedCountBadge" class="px-2.5 py-1 rounded-full bg-indigo-600 text-white font-semibold text-[11px] shadow-sm">เลือกอยู่ 0 วัน</span>
+                        <span class="text-[11px] text-slate-500 ml-auto hidden sm:inline">💡 คลิกที่ปุ่มวันที่เพื่อเลือก/ยกเลิก หรือกดปุ่ม <b>"เฉพาะวันนี้"</b> เพื่อดูวันเดียว</span>
+                    </div>
+                    <div id="simMonthBox" class="sim-scroll flex flex-row gap-3.5 overflow-x-auto pb-2 pt-0.5 max-h-[240px]"></div>
                 </div>
                 <div class="px-4 py-2 border-b border-slate-200 bg-white flex flex-wrap gap-1.5" id="simSheetBar"></div>
                 <div class="px-4 py-2 border-b border-amber-200 bg-amber-50/60 flex flex-wrap items-center gap-2 text-xs">
@@ -1669,7 +1691,15 @@
         function rebuildRowCache(row) {
             row._hhmm = {};
             for (const tc of TIME_COLS) row._hhmm[tc] = formatToHHMM(row[tc]);
-            row._search = Object.values(row).join(' ').toLowerCase();
+            row._opClass = undefined;
+            row._prodToks = undefined;
+            row._lidCache = undefined;
+            row._lidCacheTok = -1;
+            const vals = [];
+            for (const k in row) {
+                if (k.charCodeAt(0) !== 95) vals.push(row[k]);
+            }
+            row._search = vals.join(' ').toLowerCase();
             return row;
         }
         function fmtSavedTime(ts) {
@@ -2107,16 +2137,12 @@
             // อัปเดตหัวตารางให้รู้ว่ากรองอยู่
             document.getElementById('tableTitle').textContent = 'OPERATION OUTPUT';
             // precompute เวลา M-P ครั้งเดียว (ไม่ต้อง format ซ้ำตอน render/search/export) — ทำทั้งชุด Completed และชุดทุกสถานะ
+            invalidateSimAndLookupCaches();
             for (const r of parsedData) {
-                r._hhmm = {};
-                for (const tc of TIME_COLS) r._hhmm[tc] = formatToHHMM(r[tc]);
-                // index ค้นหาแบบเบา: รวมทุกค่าเป็น lowercase ครั้งเดียว
-                r._search = Object.values(r).join(' ').toLowerCase();
+                if (!r._hhmm || !r._search) rebuildRowCache(r);
             }
             for (const r of parsedDataAll) {
-                r._hhmm = {};
-                for (const tc of TIME_COLS) r._hhmm[tc] = formatToHHMM(r[tc]);
-                r._search = Object.values(r).join(' ').toLowerCase();
+                if (!r._hhmm || !r._search) rebuildRowCache(r);
             }
             // DATE: ถ้าได้วันเดียวจากไฟล์รอบนี้ และช่องกรอกยังว่าง ให้เติมอัตโนมัติ (ไม่ทับค่าที่กรอกไว้)
             const distinctDates = [...new Set(summaries.map(s => s.date).filter(Boolean))];
@@ -2815,13 +2841,23 @@
                         if (res) return res;
                     }
                 }
-                // ค้นย้อนหลังทุกวัน
-                for (const [kk, vv] of manualRemark2.entries()) {
-                    const parts = String(kk).split('||');
-                    const ck = parts[0];
-                    if (ck !== nk) continue;
-                    const res = tryText(vv);
-                    if (res) return res;
+                // ค้นย้อนหลังทุกวันผ่าน Index O(1)
+                if (!_lineLidByCntrCache || _lineLidByCntrSourceSize !== manualRemark2.size) {
+                    _lineLidByCntrCache = new Map();
+                    _lineLidByCntrSourceSize = manualRemark2.size;
+                    for (const [kk, vv] of manualRemark2.entries()) {
+                        const ck = String(kk).split('||')[0];
+                        if (!ck) continue;
+                        if (!_lineLidByCntrCache.has(ck)) _lineLidByCntrCache.set(ck, []);
+                        _lineLidByCntrCache.get(ck).push(vv);
+                    }
+                }
+                const candList = _lineLidByCntrCache.get(nk);
+                if (candList) {
+                    for (let i = 0; i < candList.length; i++) {
+                        const res = tryText(candList[i]);
+                        if (res) return res;
+                    }
                 }
                 return '';
             } catch (e) { return ''; }
@@ -4419,20 +4455,29 @@
             if (s.toUpperCase() === 'TYP') return 'Thanyaphon';
             return s;
         }
+        function classifyRowOpOption(row) {
+            if (!row) return '';
+            if (row._opClass !== undefined) return row._opClass;
+            const L = row['L'] ?? '', H = row['H'] ?? '', J = row['J'] ?? '';
+            let res = '';
+            const unload = isUnload_H(H);
+            const load = !unload && isLoad_H(H);
+            if (unload || load) {
+                if (isFDC_L(L)) {
+                    const dir = hasDirect_J(J);
+                    res = unload ? (dir ? 'in-dom-fdc' : 'in-fdc') : (dir ? 'out-dom-fdc' : 'out-fdc');
+                } else if (isWH7_L(L)) {
+                    res = unload ? 'in-wh7' : 'out-wh7';
+                } else if (isSPI_L(L)) {
+                    res = unload ? 'in-spi' : 'out-spi';
+                }
+            }
+            row._opClass = res;
+            return res;
+        }
         function matchOpOption(row, op) {
             if (!op || op === 'all') return true;
-            const L = row['L'] ?? '', H = row['H'] ?? '', J = row['J'] ?? '';
-            switch (op) {
-                case 'in-fdc': return isFDC_L(L) && isUnload_H(H) && !hasDirect_J(J);
-                case 'out-fdc': return isFDC_L(L) && isLoad_H(H) && !hasDirect_J(J);
-                case 'in-dom-fdc': return isFDC_L(L) && isUnload_H(H) && hasDirect_J(J);
-                case 'out-dom-fdc': return isFDC_L(L) && isLoad_H(H) && hasDirect_J(J);
-                case 'in-spi': return isSPI_L(L) && isUnload_H(H);
-                case 'out-spi': return isSPI_L(L) && isLoad_H(H);
-                case 'in-wh7': return isWH7_L(L) && isUnload_H(H);
-                case 'out-wh7': return isWH7_L(L) && isLoad_H(H);
-                default: return true;
-            }
+            return classifyRowOpOption(row) === op;
         }
         function applyOpOption(rows, op) {
             if (!op || op === 'all') return rows;
@@ -4459,12 +4504,11 @@
             // นับจำนวนต่อปุ่ม OPTIONS โดยเคารพ PIVOT + ตัวกรอง PRODUCT ปัจจุบัน (ไม่รวมคำค้น เพื่อให้เห็นภาพรวม)
             let base = applyProductOption(parsedData, activeProduct);
             if (typeof applyPivotFilter === 'function') base = applyPivotFilter(base);
-            const counts = { all: base.length };
-            ['in-fdc','out-fdc','in-dom-fdc','out-dom-fdc','in-spi','out-spi','in-wh7','out-wh7'].forEach(op => {
-                let c = 0;
-                for (let i = 0; i < base.length; i++) if (matchOpOption(base[i], op)) c++;
-                counts[op] = c;
-            });
+            const counts = { all: base.length, 'in-fdc': 0, 'out-fdc': 0, 'in-dom-fdc': 0, 'out-dom-fdc': 0, 'in-spi': 0, 'out-spi': 0, 'in-wh7': 0, 'out-wh7': 0 };
+            for (let i = 0; i < base.length; i++) {
+                const op = classifyRowOpOption(base[i]);
+                if (op && counts[op] !== undefined) counts[op]++;
+            }
             document.querySelectorAll('#opOptionBar .op-btn').forEach(b => {
                 const op = b.dataset.op;
                 const baseName = OP_OPTION_NAMES[op] || op;
@@ -4495,9 +4539,15 @@
         function productTokensOf(v) {
             return normCell(v).split(/[^A-Z0-9]+/).filter(Boolean);
         }
+        function getRowProductTokens(row) {
+            if (!row) return [];
+            if (row._prodToks !== undefined) return row._prodToks;
+            row._prodToks = productTokensOf(row['G']);
+            return row._prodToks;
+        }
         function matchProductOption(row, prod) {
             if (!prod || prod === 'all') return true;
-            const toks = productTokensOf(row ? row['G'] : '');
+            const toks = getRowProductTokens(row);
             if (prod === 'OTHER') {
                 return !PRODUCT_LIST.some(p => toks.includes(p));
             }
@@ -5264,7 +5314,9 @@
                 if (!context) throw new Error('Canvas text measurement is unavailable');
                 context.font = getComputedStyle(tbody).font || '14px sans-serif';
                 const columnWidths = headerLabels.map(label => context.measureText(label).width);
-                for (let i = 0; i < sizingRows.length; i++) {
+                const maxSample = Math.min(sizingRows.length, 250);
+                const step = sizingRows.length > maxSample ? Math.max(1, Math.floor(sizingRows.length / maxSample)) : 1;
+                for (let i = 0; i < sizingRows.length; i += step) {
                     const row = sizingRows[i];
                     for (let k = 0; k < displayHeaders.length; k++) {
                         const h = displayHeaders[k];
@@ -6223,8 +6275,28 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
             'in-wh7': 'Handing in SPI WH-7', 'out-wh7': 'Handing Out SPI WH-7'
         };
         // แปลง DATE หลายรูปแบบ (23-Sep-26, 23/September/2026, 05-09-26, 2026-09-23) เป็น timestamp เพื่อเรียงวันที่
+        const _opDateTimeCache = new Map();
+        const _fmtDDMMMYYYYCache = new Map();
+        let _simSheetsCacheKey = '';
+        let _simSheetsCacheVal = null;
+        let _lineLidByCntrCache = null;
+        let _lineLidByCntrSourceSize = -1;
+        function invalidateSimAndLookupCaches() {
+            _simSheetsCacheKey = '';
+            _simSheetsCacheVal = null;
+            _lineLidByCntrCache = null;
+            _lineLidByCntrSourceSize = -1;
+        }
         function parseOpDateToTime(ds) {
             const s = String(ds || '').trim();
+            if (!s) return null;
+            if (_opDateTimeCache.has(s)) return _opDateTimeCache.get(s);
+            const res = _parseOpDateToTimeUncached(s);
+            if (_opDateTimeCache.size > 10000) _opDateTimeCache.clear();
+            _opDateTimeCache.set(s, res);
+            return res;
+        }
+        function _parseOpDateToTimeUncached(s) {
             let m = s.match(/^(\d{1,2})[-\/\s]([A-Za-z]{3,9})[-\/\s](\d{2,4})$/);
             if (m) {
                 const mi = EN_MONTHS.findIndex(x => x.toLowerCase() === (m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase().substring(0, 2)).toLowerCase());
@@ -6247,6 +6319,14 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
         // จัดรูปแบบ DATE เป็น DD-MMM-YYYY (เช่น 30-09-2026 → 30-Sep-2026, 23-Sep-26 → 23-Sep-2026)
         function formatDateDDMMMYYYY(ds) {
             const s = String(ds || '').trim();
+            if (!s) return '';
+            if (_fmtDDMMMYYYYCache.has(s)) return _fmtDDMMMYYYYCache.get(s);
+            const res = _formatDateDDMMMYYYYUncached(s);
+            if (_fmtDDMMMYYYYCache.size > 10000) _fmtDDMMMYYYYCache.clear();
+            _fmtDDMMMYYYYCache.set(s, res);
+            return res;
+        }
+        function _formatDateDDMMMYYYYUncached(s) {
             const stdMon = (txt) => {
                 const key = String(txt || '').charAt(0).toUpperCase() + String(txt || '').slice(1).toLowerCase().substring(0, 2);
                 return EN_MONTHS.find(x => x.toLowerCase() === key.toLowerCase()) || null;
@@ -6431,7 +6511,26 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
             const body = document.getElementById('simBody');
             const sum = document.getElementById('simSummary');
             const arr = simFilteredArr();
-            const sheets = arr.length ? buildMonthlySheets(arr) : [];
+            const badgeEl = document.getElementById('simSelectedCountBadge');
+            if (badgeEl) {
+                const selDaysCount = new Set(arr.map(d => d.date)).size;
+                const selMonthsCount = new Set(arr.map(d => d.monthKey || monthKeyFromOpDate(d.date))).size;
+                badgeEl.textContent = selDaysCount > 0 ? `เลือกอยู่ ${selDaysCount} วัน (${selMonthsCount} เดือน)` : 'ยังไม่ได้เลือกวัน';
+                badgeEl.className = selDaysCount > 0
+                    ? 'px-2.5 py-1 rounded-full bg-indigo-600 text-white font-semibold text-[11px] shadow-sm'
+                    : 'px-2.5 py-1 rounded-full bg-rose-100 text-rose-700 border border-rose-300 font-semibold text-[11px]';
+            }
+            const cacheKey = arr.map(d => (d.date || '') + ':' + (d.shift || '') + ':' + (d.total || 0)).join('|') + '||' + manualRemark2.size + '||' + yellowLookup.size + '||' + closingLidLookup.size + '||' + parsedData.length;
+            let sheets;
+            if (!arr.length) {
+                sheets = [];
+            } else if (_simSheetsCacheKey === cacheKey && _simSheetsCacheVal) {
+                sheets = _simSheetsCacheVal;
+            } else {
+                sheets = buildMonthlySheets(arr);
+                _simSheetsCacheKey = cacheKey;
+                _simSheetsCacheVal = sheets;
+            }
             simSheets = sheets;
             if (!sheets.length) {
                 if (bar) bar.innerHTML = '';
@@ -6496,10 +6595,10 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
             const groups = distinctMonthGroups(simArr);
             window._monthPickCache = simArr;
             simActiveOp = MONTHLY_OPS[0];
+            const now = new Date();
+            const curKey = `${EN_MONTHS[now.getMonth()]}-${String(now.getFullYear()).slice(2)}`;
+            const defKey = groups.some(g => g.monthKey === curKey) ? curKey : (groups.length ? groups[groups.length - 1].monthKey : null);
             if (box) {
-                const now = new Date();
-                const curKey = `${EN_MONTHS[now.getMonth()]}-${String(now.getFullYear()).slice(2)}`;
-                const defKey = groups.some(g => g.monthKey === curKey) ? curKey : (groups.length ? groups[groups.length - 1].monthKey : null);
                 box.innerHTML = groups.map(g => {
                     const uniqDays = [...new Set(g.days.map(d => d.date))].sort((a, b) => {
                         const ta = parseOpDateToTime(a), tb = parseOpDateToTime(b);
@@ -6508,21 +6607,36 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
                     });
                     const safeKey = String(g.monthKey).replace(/"/g, '&quot;');
                     const dayCountByDate = new Map();
-                    g.days.forEach(d => { dayCountByDate.set(d.date, (dayCountByDate.get(d.date) || 0) + 1); });
+                    const rowCountByDate = new Map();
+                    g.days.forEach(d => {
+                        dayCountByDate.set(d.date, (dayCountByDate.get(d.date) || 0) + 1);
+                        rowCountByDate.set(d.date, (rowCountByDate.get(d.date) || 0) + (d.total || 0));
+                    });
                     const isDef = g.monthKey === defKey;
-                    return `<div class="rounded-lg border border-slate-300 overflow-hidden">` +
-                        `<label class="flex items-center gap-2 p-2 bg-slate-100 hover:bg-slate-200 cursor-pointer transition">` +
-                        `<input type="checkbox" data-monthgroup="1" data-monthkey="${safeKey}"${isDef ? ' checked' : ''} class="accent-slate-800 w-3.5 h-3.5">` +
-                        `<span class="flex-1 text-sm font-semibold text-slate-700">📅 ${g.monthKey}</span>` +
-                        `<span class="text-[11px] text-slate-500">${uniqDays.length} วัน</span></label>` +
-                        `<div class="px-3 py-2 space-y-1 bg-white">` +
+                    return `<div data-monthcard="${safeKey}" class="sim-month-card shrink-0 min-w-[330px] max-w-[380px] rounded-xl border-2 border-slate-300 overflow-hidden bg-white shadow-sm flex flex-col">` +
+                        `<div class="flex items-center justify-between gap-2 px-3 py-2 bg-slate-100 border-b border-slate-200">` +
+                        `<label class="flex items-center gap-2 cursor-pointer select-none flex-1">` +
+                        `<input type="checkbox" data-monthgroup="1" data-monthkey="${safeKey}"${isDef ? ' checked' : ''} class="accent-indigo-600 w-4 h-4 cursor-pointer">` +
+                        `<span class="text-sm font-bold text-slate-800">📅 เดือน ${g.monthKey}</span>` +
+                        `<span class="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">${uniqDays.length} วัน</span></label>` +
+                        `<button type="button" data-onlymonth="${safeKey}" class="px-2 py-0.5 text-[11px] font-semibold rounded bg-white hover:bg-indigo-600 text-slate-600 hover:text-white border border-slate-300 hover:border-indigo-600 transition shadow-sm" title="เลือกเฉพาะเดือนนี้เดือนเดียว">เฉพาะเดือนนี้</button>` +
+                        `</div>` +
+                        `<div class="sim-scroll p-2.5 grid grid-cols-2 gap-1.5 bg-white max-h-[165px] overflow-y-auto">` +
                         uniqDays.map(date => {
                             const safeDate = String(date).replace(/"/g, '&quot;');
                             const k = dayCountByDate.get(date) || 0;
-                            return `<label class="flex items-center gap-2 py-0.5 cursor-pointer">` +
-                                `<input type="checkbox" data-daydate="${safeDate}" data-monthkey="${safeKey}"${isDef ? ' checked' : ''} class="accent-slate-800 w-3.5 h-3.5">` +
-                                `<span class="text-xs text-slate-700">${formatDateDDMMMYYYY(date)}</span>` +
-                                `<span class="text-[10px] text-slate-400">(${k} กะ)</span></label>`;
+                            const rCnt = rowCountByDate.get(date) || 0;
+                            const dispDate = formatDateDDMMMYYYY(date);
+                            const dayNum = String(dispDate).split('-')[0] || dispDate;
+                            return `<div class="sim-day-pill flex items-center justify-between gap-1 px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50/70 hover:border-indigo-400 transition">` +
+                                `<label class="flex items-center gap-1.5 cursor-pointer select-none flex-1 min-w-0">` +
+                                `<input type="checkbox" data-daydate="${safeDate}" data-monthkey="${safeKey}"${isDef ? ' checked' : ''} class="accent-indigo-600 w-4 h-4 shrink-0 cursor-pointer">` +
+                                `<div class="truncate leading-tight">` +
+                                `<div class="text-xs font-bold text-slate-800">${dispDate}</div>` +
+                                `<div class="text-[10px] text-slate-500">${k} กะ • ${rCnt.toLocaleString()} ตู้</div>` +
+                                `</div></label>` +
+                                `<button type="button" data-onlyday="${safeDate}" data-monthkey="${safeKey}" class="shrink-0 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-indigo-600 text-indigo-600 hover:text-white border border-indigo-200 hover:border-indigo-600 transition" title="ดูเฉพาะวันที่ ${dispDate} วันเดียว">เฉพาะ</button>` +
+                                `</div>`;
                         }).join('') +
                         `</div></div>`;
                 }).join('');
@@ -6543,6 +6657,40 @@ if (_lineRemarkGotoSim) _lineRemarkGotoSim.addEventListener('click', function() 
                     });
                 });
             }
+            const qSel = document.getElementById('simMonthQuickSelect');
+            if (qSel) {
+                qSel.innerHTML = '<option value="">-- เลือกเดือนด่วน --</option>' + groups.map(g => {
+                    const safeKey = String(g.monthKey).replace(/"/g, '&quot;');
+                    const uniqDaysCount = new Set(g.days.map(d => d.date)).size;
+                    return `<option value="${safeKey}"${g.monthKey === defKey ? ' selected' : ''}>📅 ${g.monthKey} (${uniqDaysCount} วัน)</option>`;
+                }).join('');
+                qSel.onchange = function() {
+                    const mk = this.value;
+                    if (!mk || !box) return;
+                    box.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = (c.getAttribute('data-monthkey') === mk); });
+                    const card = box.querySelector('[data-monthcard="' + mk + '"]');
+                    if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                    renderSimSheet();
+                };
+            }
+            const selAllBtn = document.getElementById('simSelectAllBtn');
+            if (selAllBtn) selAllBtn.onclick = function() {
+                if (!box) return;
+                box.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = true; });
+                renderSimSheet();
+            };
+            const clrAllBtn = document.getElementById('simClearAllBtn');
+            if (clrAllBtn) clrAllBtn.onclick = function() {
+                if (!box) return;
+                box.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = false; });
+                renderSimSheet();
+            };
+            setTimeout(() => {
+                if (defKey && box) {
+                    const defCard = box.querySelector('[data-monthcard="' + defKey + '"]');
+                    if (defCard && defCard.scrollIntoView) defCard.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                }
+            }, 50);
             renderSimSheet();
         }
         function closeSimModal() { const m = document.getElementById('monthlySimModal'); if (m) m.classList.add('hidden'); }
@@ -6555,6 +6703,38 @@ if (_linePasteOpenFromSim) _linePasteOpenFromSim.addEventListener('click', openL
 // Event delegation สำหรับเลือกวันที่ใน simulate (กันกรณี listener รายตัวไม่ทำงาน)
 const _simMonthBox = document.getElementById('simMonthBox');
 if (_simMonthBox) {
+    _simMonthBox.addEventListener('click', function(e) {
+        const onlyDayBtn = e.target.closest ? e.target.closest('[data-onlyday]') : null;
+        if (onlyDayBtn) {
+            e.preventDefault();
+            const targetDate = onlyDayBtn.getAttribute('data-onlyday');
+            const targetMk = onlyDayBtn.getAttribute('data-monthkey');
+            _simMonthBox.querySelectorAll('input[data-daydate]').forEach(dc => {
+                dc.checked = (dc.getAttribute('data-daydate') === targetDate);
+            });
+            _simMonthBox.querySelectorAll('input[data-monthgroup]').forEach(mc => {
+                const mk = mc.getAttribute('data-monthkey');
+                const days = _simMonthBox.querySelectorAll('input[data-daydate][data-monthkey="' + mk + '"]');
+                mc.checked = days.length > 0 && [...days].every(c => c.checked);
+            });
+            const qSel = document.getElementById('simMonthQuickSelect');
+            if (qSel && targetMk) qSel.value = targetMk;
+            renderSimSheet();
+            return;
+        }
+        const onlyMonthBtn = e.target.closest ? e.target.closest('[data-onlymonth]') : null;
+        if (onlyMonthBtn) {
+            e.preventDefault();
+            const targetMk = onlyMonthBtn.getAttribute('data-onlymonth');
+            _simMonthBox.querySelectorAll('input[type="checkbox"]').forEach(c => {
+                c.checked = (c.getAttribute('data-monthkey') === targetMk);
+            });
+            const qSel = document.getElementById('simMonthQuickSelect');
+            if (qSel && targetMk) qSel.value = targetMk;
+            renderSimSheet();
+            return;
+        }
+    });
     _simMonthBox.addEventListener('change', function(e) {
         const t = e.target;
         if (!t || t.tagName !== 'INPUT') return;
@@ -6621,10 +6801,23 @@ if (_lineChatFile) _lineChatFile.addEventListener('change', async function(e) {
         });
         function buildMonthlySheets(arr) {
             const switchingRows = new Set();
+            const parsedByDateShift = new Map();
+            const parsedByDateShiftCntr = new Map();
             if (typeof parsedData !== 'undefined' && Array.isArray(parsedData)) {
                 parsedData.forEach(row => {
+                    const rDate = effectiveOpDate(row);
+                    const rShift = effectiveOpShift(row) || '';
+                    const dsk = rDate + '||' + rShift;
+                    if (!parsedByDateShift.has(dsk)) parsedByDateShift.set(dsk, []);
+                    parsedByDateShift.get(dsk).push(row);
+                    const cKey = normalizeCntrKey(row['D']);
+                    if (cKey) {
+                        const dsck = dsk + '||' + cKey;
+                        if (!parsedByDateShiftCntr.has(dsck)) parsedByDateShiftCntr.set(dsck, []);
+                        parsedByDateShiftCntr.get(dsck).push(row);
+                    }
                     if (!String(row['J'] ?? '').toLowerCase().includes('switching')) return;
-                    const key = monthlySwitchingKey(effectiveOpDate(row), effectiveOpShift(row), row['D']);
+                    const key = monthlySwitchingKey(rDate, rShift, row['D']);
                     if (key) switchingRows.add(key);
                 });
             }
@@ -6646,9 +6839,8 @@ return d.items[op].map(e => ({ c: String((e && e.c) ?? '').trim(), lid: String((
                 try {
                     if (typeof parsedData !== 'undefined' && parsedData.length && typeof matchOpOption === 'function') {
                         const list = [];
-                        for (const r of parsedData) {
-                            if (effectiveOpDate(r) !== d.date) continue;
-                            if ((effectiveOpShift(r) || '') !== (d.shift || '')) continue;
+                        const dayRows = parsedByDateShift.get((d.date || '') + '||' + (d.shift || '')) || [];
+                        for (const r of dayRows) {
                             if (!matchOpOption(r, op)) {
                                 // in-fdc รวมแถว J-Direct ที่ย้ายมาด้วย (Reason ไม่มี DOMESTIC) — มี DOMESTIC อยู่ที่ domestic ไม่ต้องมา
                                 if (!(op === 'in-fdc' && matchOpOption(r, 'in-dom-fdc'))) continue;
@@ -7081,34 +7273,19 @@ return d.items[op].map(e => ({ c: String((e && e.c) ?? '').trim(), lid: String((
                                     }
                                 } catch (e) {}
                             }
-                            // Plant: ใช้ที่เก็บไว้ ถ้าไม่มีลองหา G จากข้อมูลปัจจุบันบนจอ (เลขตู้+วัน+OPTION เดียวกัน)
+                            // Plant & Vendor: ค้นผ่าน Map O(1) แทนการวนลูป parsedData ทั้งหมด
                             let pl = it.plant || '';
-                            if (!pl) {
-                                try {
-                                    if (typeof parsedData !== 'undefined' && parsedData.length && typeof plantForG === 'function') {
-                                        for (const r of parsedData) {
-                                            if (effectiveOpDate(r) !== d.date) continue;
-                                            if ((effectiveOpShift(r) || '') !== (d.shift || '')) continue;
-                                            if (normalizeCntrKey(r['D']) !== normalizeCntrKey(it.c)) continue;
-                                            if (!matchOpOption(r, op)) continue;
-                                            pl = String(plantForG(r['G']) ?? '').trim();
-                                            if (pl) break;
-                                        }
-                                    }
-                                } catch (e) {}
-                            }
-                            // Vendor: ใช้ที่เก็บไว้ (จาก DATA คอลัมน์ R) ถ้าไม่มีค้นจากข้อมูลปัจจุบันบนจอ (เลขตู้+วัน+OPTION เดียวกัน)
                             let vd = vendorForR(it.vendor);
-                            if (!vd) {
+                            if (!pl || !vd) {
                                 try {
-                                    if (typeof parsedData !== 'undefined' && parsedData.length) {
-                                        for (const r of parsedData) {
-                                            if (effectiveOpDate(r) !== d.date) continue;
-                                            if ((effectiveOpShift(r) || '') !== (d.shift || '')) continue;
-                                            if (normalizeCntrKey(r['D']) !== normalizeCntrKey(it.c)) continue;
+                                    const cRows = parsedByDateShiftCntr.get((d.date || '') + '||' + (d.shift || '') + '||' + normalizeCntrKey(it.c));
+                                    if (cRows) {
+                                        for (let ci = 0; ci < cRows.length; ci++) {
+                                            const r = cRows[ci];
                                             if (!matchOpOption(r, op)) continue;
-                                            vd = vendorForR(r['R']);
-                                            if (vd) break;
+                                            if (!pl && typeof plantForG === 'function') pl = String(plantForG(r['G']) ?? '').trim();
+                                            if (!vd) vd = vendorForR(r['R']);
+                                            if (pl && vd) break;
                                         }
                                     }
                                 } catch (e) {}
@@ -8822,10 +8999,12 @@ document.querySelectorAll('[data-inout-close]').forEach(el => el.addEventListene
             try { updateMonthlyBadge(await loadMonthlyStats()); } catch (e) { console.warn(e); }
             try { await restoreManualRemark2(); } catch (e) { console.warn(e); }
             let saved = null, savedTender = null, savedOdoo = null, savedOdooWH7 = null;
-            try { saved = await idbGet(IDB_KEY_DATA); } catch (e) { console.warn('load data failed', e); }
-            try { savedTender = await idbGet(IDB_KEY_TENDER); } catch (e) { console.warn('load tender failed', e); }
-            try { savedOdoo = await idbGet(IDB_KEY_ODOO); } catch (e) { console.warn('load odoo failed', e); }
-            try { savedOdooWH7 = await idbGet(IDB_KEY_ODOOWH7); } catch (e) { console.warn('load odoo WH7 failed', e); }
+            [saved, savedTender, savedOdoo, savedOdooWH7] = await Promise.all([
+                idbGet(IDB_KEY_DATA).catch(e => { console.warn('load data failed', e); return null; }),
+                idbGet(IDB_KEY_TENDER).catch(e => { console.warn('load tender failed', e); return null; }),
+                idbGet(IDB_KEY_ODOO).catch(e => { console.warn('load odoo failed', e); return null; }),
+                idbGet(IDB_KEY_ODOOWH7).catch(e => { console.warn('load odoo WH7 failed', e); return null; })
+            ]);
             // คืนค่า TENDER lookup ก่อน (DATA จะได้มี LID ทันที) — แปลงฟอร์แมตเก่า (ค่าตรงๆ) เป็นฟอร์แมตใหม่ (วัน+กะ)
             if (savedTender && savedTender.lookup) {
                 try {
@@ -8844,12 +9023,13 @@ document.querySelectorAll('[data-inout-close]').forEach(el => el.addEventListene
                     parsedDataYellow = (savedTender.rows || []).map(r => ({ ...r }));
                     // ย้ายวันแถวที่เซฟไว้ไปใช้คอลัมน์ Gate In Datetime (ถ้าหาเจอ) แล้วสร้าง lookup ใหม่ให้ตรงกัน
                     try {
+                        let migratedCount = 0;
                         const gH = (tableHeadersYellow || []).find(h => isGateDateHeader(h.name));
                         if (gH) {
                             if (!yellowMeta.gateLetter) yellowMeta.gateLetter = gH.letter;
-                            migrateTenderGateDates(parsedDataYellow, gH.letter);
+                            migratedCount = migrateTenderGateDates(parsedDataYellow, gH.letter);
                         }
-                        if (typeof rebuildTenderLookups === 'function' && parsedDataYellow.length) {
+                        if (typeof rebuildTenderLookups === 'function' && parsedDataYellow.length && (migratedCount > 0 || yellowLookup.size === 0 || yellowNodeLookup.size === 0)) {
                             const snapY = yellowLookup, snapN = yellowNodeLookup;
                             rebuildTenderLookups();
                             if (yellowLookup.size === 0 && snapY && snapY.size > 0) { yellowLookup = snapY; yellowNodeLookup = snapN; }
